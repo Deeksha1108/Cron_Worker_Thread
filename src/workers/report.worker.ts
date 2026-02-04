@@ -4,6 +4,11 @@ function generateReport(date: string) {
   if (Math.random() < 0.5) {
     throw new Error('Random worker failure');
   }
+  
+  // yeh intentionally lgaya h (forcefully fail k liye)
+  // if (workerData.forceFail) {
+  //   throw new Error('Controlled failure');
+  // }
 
   let total = 0;
   for (let i = 0; i < 1e8; i++) {

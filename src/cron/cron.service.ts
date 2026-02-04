@@ -41,6 +41,7 @@ export class CronService {
       workerData: {
         logId,
         generatedAt: new Date().toISOString(),
+        // forceFail: false,
       },
     });
 
@@ -63,7 +64,6 @@ export class CronService {
 
   async retryOrFail(logId: number) {
     const log = await this.reportRepo.findOneBy({ id: logId });
-    // NULL SAFETY CHECK
     if (!log) {
       console.error(`ReportLog not found for id: ${logId}`);
       return;

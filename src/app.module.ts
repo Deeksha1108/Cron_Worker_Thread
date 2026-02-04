@@ -5,7 +5,7 @@ import { DatabaseModule } from './database/database.module';
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(), // cron system enable
+    ScheduleModule.forRoot(), // cron ko enable kiya
     DatabaseModule,
     CronModule,               // humara cron logic
   ],
