@@ -1,98 +1,302 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Cron Worker Thread Service – Report Generation using NestJS + PostgreSQL
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+## Background Jobs using Cron + Worker Threads with Retry Handling
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+This project demonstrates how **real-world backend systems** handle **heavy background tasks** using:
 
-## Description
+* Cron jobs for scheduling
+* Worker Threads for CPU-intensive work
+* Database-backed logs for tracking status & retries
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+The goal of this service is to show **how long-running or heavy computations are safely moved out of the main Node.js thread**, while still being reliable, observable, and retryable.
 
-## Project setup
+---
 
-```bash
-$ npm install
+## What Problem Does This Project Solve?
+
+In real production systems:
+
+* Cron jobs are used for **scheduled tasks** (reports, cleanups, syncs)
+* Heavy computation **must NOT block** the main server
+* Failures **must be tracked and retried**
+
+This service solves that by:
+
+* Triggering jobs using **NestJS Cron**
+* Executing heavy logic inside **Worker Threads**
+* Persisting job status in **PostgreSQL**
+* Implementing **retry & failure handling**
+
+---
+
+## High-Level Architecture
+
+Flow:
+
+Cron Scheduler → Main Thread → Worker Thread → Database Updates
+
+Meaning:
+
+* Cron triggers a job every minute
+* Main thread spawns a worker thread
+* Worker performs CPU-heavy calculation
+* Result + status are saved in DB
+
+---
+
+## Why Worker Threads?
+
+Node.js runs on a **single-threaded event loop**.
+
+If heavy computation runs in the main thread:
+
+* API requests freeze
+* Server becomes unresponsive
+
+**Worker Threads** allow:
+
+* CPU-heavy tasks to run in parallel
+* Main thread to stay responsive
+* True multi-core utilization
+
+---
+
+## What is “Spawn Worker Thread”?
+
+Spawning a worker thread means:
+
+* Creating a **new thread**
+* Running heavy code in isolation
+* Communicating via messages
+
+In this project:
+
+```ts
+new Worker('report.worker.js', { workerData })
 ```
 
-## Compile and run the project
+Each job gets its **own worker instance**.
 
-```bash
-# development
-$ npm run start
+---
 
-# watch mode
-$ npm run start:dev
+## Database Design (report_logs Table)
 
-# production mode
-$ npm run start:prod
+This table acts as a **job execution log**.
+
+### Columns Explained
+
+* **id**
+
+  * Unique identifier for each job
+
+* **status** (SUCCESS | FAILED | RETRYING)
+
+  * Tracks current job state
+
+* **generatedAt**
+
+  * Business timestamp for report generation
+
+* **result (bigint)**
+
+  * Stores large computed result
+  * bigint is used because results exceed 32-bit limits
+
+* **retryCount**
+
+  * Number of retry attempts
+
+* **createdAt**
+
+  * When the job entry was created
+
+This ensures:
+
+* Full traceability
+* Debugging support
+* Production-grade observability
+
+---
+
+## Why Database Will NOT Get Overloaded
+
+Important points:
+
+* One row per cron execution
+* Data can be cleaned via retention policy
+* This is how real systems audit background jobs
+
+In production:
+
+* Old logs are archived or deleted
+* DB is not used as a queue, only as **job state storage**
+
+---
+
+## Why bigint Result Values Are So Large
+
+Inside worker:
+
+```ts
+for (let i = 0; i < 1e8; i++) {
+  total += i;
+}
 ```
 
-## Run tests
+* `1e8` simulates **heavy CPU work**
+* Result grows beyond normal integer range
+* Hence `bigint` is required
 
-```bash
-# unit tests
-$ npm run test
+Alternatives could be:
 
-# e2e tests
-$ npm run test:e2e
+* Smaller loop
+* File output
+* External storage
 
-# test coverage
-$ npm run test:cov
+This approach is chosen **only for demonstration**.
+
+---
+
+## Retry & Failure Handling Logic
+
+MAX_RETRY = 3
+
+Flow:
+
+1. Worker succeeds → status = SUCCESS
+2. Worker fails → retryCount++
+3. If retryCount < MAX_RETRY → retry
+4. If retryCount >= MAX_RETRY → status = FAILED
+
+This mimics **real production retry mechanisms**.
+
+---
+
+## Cron Execution Flow (Step-by-Step)
+
+1. Cron runs every minute
+2. New log entry created in DB
+3. Worker thread is spawned
+4. Worker executes heavy computation
+5. Result is sent back
+6. DB is updated
+7. Retry happens automatically on failure
+
+---
+
+## Tech Stack Used
+
+* NestJS
+* @nestjs/schedule (Cron)
+* Worker Threads (Node.js)
+* PostgreSQL
+* TypeORM
+* Node.js
+
+---
+
+## Project Folder Structure
+
+```
+src/
+├── cron/
+│   ├── cron.module.ts
+│   └── cron.service.ts
+├── workers/
+│   └── report.worker.js
+├── database/
+│   ├── database.module.ts
+│   └── entities/
+│       └── report-log.entity.ts
+├── app.module.ts
+└── main.ts
 ```
 
-## Deployment
+---
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Setup Instructions
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### 1. Clone Repository
 
 ```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
+git clone <repository-url>
+cd cron-worker-thread
+npm install
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+---
 
-## Resources
+### 2. Setup PostgreSQL
 
-Check out a few resources that may come in handy when working with NestJS:
+Create database:
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+```
+cron_worker_thread
+```
 
-## Support
+Update credentials in:
+`database.module.ts`
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+---
 
-## Stay in touch
+### 3. Start Application
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+```bash
+npm run start:dev
+```
 
-## License
+Console output:
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+```
+Cron triggered
+cron worker is running...
+```
+
+---
+
+## Verification
+
+Check PostgreSQL:
+
+```sql
+SELECT * FROM report_logs;
+```
+
+You will see:
+
+* RETRYING
+* SUCCESS
+* FAILED
+
+With retry counts.
+
+---
+
+## Production-Level Concepts Applied
+
+* Background job processing
+* Cron scheduling
+* Worker thread isolation
+* Retry & failure strategy
+* Database-backed job tracking
+* Non-blocking server design
+* Clean separation of concerns
+
+---
+
+## What I Learned from This Project
+
+* How cron jobs work internally
+* Why worker threads are needed in Node.js
+* How to offload CPU-heavy work safely
+* How retry mechanisms are designed
+* How real systems track background jobs
+* Difference between async tasks and multi-threading
+
+---
+
+## Made By Deeksha
+
+This project demonstrates **real-world cron + worker thread usage**
+with NestJS and PostgreSQL, focusing on scalability, reliability,
+and production-grade backend design.
